@@ -1,163 +1,264 @@
 <?php
 session_start();
 include 'koneksi.php';
+
+// Include SimpleXLSX for Excel Import if available
+if (file_exists('SimpleXLSX.php')) {
+    include 'SimpleXLSX.php';
+}
 date_default_timezone_set('Asia/Jakarta');
 
-// --- KEAMANAN ---
+// --- SECURITY CHECK ---
 if(!isset($_SESSION['status']) || $_SESSION['status'] != "login"){
     header("location:login.php?pesan=belum_login");
     exit;
 }
 
-// --- KONFIGURASI KELAS ---
+// --- CLASS CONFIGURATION ---
 $pilihan_kelas = [
-    "X RPL", "XI RPL", "XII RPL", "X AK", "XI AK", "XII AK",
+    "X RPL 1", "X RPL 2", "X TKJ 1", "X TKJ 2", "X MM 1", "X MM 2",
+    "XI RPL 1", "XI RPL 2", "XI TKJ 1", "XI TKJ 2", "XI MM 1", "XI MM 2",
+    "XII RPL 1", "XII RPL 2", "XII TKJ 1", "XII TKJ 2", "XII MM 1", "XII MM 2"
 ];
 
-// --- INITIALIZE VARS ---
-$nis_val = ""; $nama_val = ""; $kelas_val = ""; $rfid_val = ""; $id_val = ""; $foto_val = ""; 
+$page = isset($_GET['page']) ? $_GET['page'] : 'siswa'; 
+$swal_type = ""; $swal_msg = "";
 $is_edit = false;
 
-// Variabel untuk SweetAlert
-$swal_type = "";
-$swal_msg = "";
+// Vars Siswa
+$nis_val = ""; $nama_val = ""; $kelas_val = ""; $rfid_val = ""; $id_val = ""; $foto_val = ""; 
 
-// --- FUNGSI UPLOAD FOTO ---
-function uploadFoto($file, $nis) {
-    $target_dir = "uploads/siswa/";
-    if (!is_dir($target_dir)) { mkdir($target_dir, 0777, true); } // Buat folder jika belum ada
+// Vars Wali
+$id_wali = ""; $user_wali = ""; $pass_wali = ""; $nama_wali = ""; $kelas_wali = "";
 
-    $file_extension = strtolower(pathinfo($file["name"], PATHINFO_EXTENSION));
-    $new_filename = "siswa_" . $nis . "_" . time() . "." . $file_extension;
-    $target_file = $target_dir . $new_filename;
-    
-    $allowed = ['jpg', 'jpeg', 'png'];
+// Vars BK
+$id_bk = ""; $user_bk = ""; $pass_bk = ""; $nama_bk = "";
 
-    if (in_array($file_extension, $allowed)) {
-        if (move_uploaded_file($file["tmp_name"], $target_file)) {
-            return $new_filename;
+// =================================================================================
+// LOGIC: MANAJEMEN SISWA
+// =================================================================================
+if ($page == 'siswa') {
+    if (!function_exists('uploadFoto')) {
+        function uploadFoto($file, $nis) {
+            $target_dir = "uploads/siswa/";
+            if (!is_dir($target_dir)) { mkdir($target_dir, 0777, true); }
+            $ext = strtolower(pathinfo($file["name"], PATHINFO_EXTENSION));
+            $new_name = "siswa_" . $nis . "_" . time() . "." . $ext;
+            $allowed = ['jpg', 'jpeg', 'png'];
+            if (in_array($ext, $allowed) && move_uploaded_file($file["tmp_name"], $target_dir . $new_name)) return $new_name;
+            return false;
         }
     }
-    return false;
-}
 
-// --- LOGIC: GENERATE ALPHA OTOMATIS ---
-if (isset($_POST['generate_alpha'])) {
-    $today = date('Y-m-d');
-    $query_alpha = "SELECT * FROM siswa WHERE rfid_uid NOT IN (SELECT rfid_uid FROM log_absensi WHERE DATE(waktu) = '$today')";
-    $result_alpha = mysqli_query($conn, $query_alpha);
-    $jumlah_alpha = mysqli_num_rows($result_alpha);
+    // --- IMPORT EXCEL FEATURE ---
+    if (isset($_POST['import_excel'])) {
+        if (isset($_FILES['file_excel']) && $_FILES['file_excel']['error'] == 0) {
+            if (class_exists('SimpleXLSX')) {
+                if ($xlsx = SimpleXLSX::parse($_FILES['file_excel']['tmp_name'])) {
+                    $rows = $xlsx->rows();
+                    $count_success = 0;
+                    $count_fail = 0;
+                    
+                    // Skip header row (index 0), start from 1
+                    for ($i = 1; $i < count($rows); $i++) {
+                        // Assuming Excel columns: A=NIS, B=Nama, C=Kelas, D=RFID
+                        $nis = isset($rows[$i][0]) ? mysqli_real_escape_string($conn, $rows[$i][0]) : '';
+                        $nama = isset($rows[$i][1]) ? mysqli_real_escape_string($conn, $rows[$i][1]) : '';
+                        $kelas = isset($rows[$i][2]) ? mysqli_real_escape_string($conn, $rows[$i][2]) : '';
+                        $rfid = isset($rows[$i][3]) ? mysqli_real_escape_string($conn, $rows[$i][3]) : '';
 
-    if ($jumlah_alpha > 0) {
-        while ($row = mysqli_fetch_assoc($result_alpha)) {
-            $uid = $row['rfid_uid'];
-            mysqli_query($conn, "INSERT INTO log_absensi (rfid_uid, waktu, status) VALUES ('$uid', '$today 08:00:00', 'Alpha (Tidak Hadir)')");
-        }
-        $swal_type = "success"; $swal_msg = "Berhasil! $jumlah_alpha siswa ditandai Alpha.";
-    } else {
-        $swal_type = "info"; $swal_msg = "Semua siswa sudah absen. Tidak ada data baru.";
-    }
-}
-
-// --- LOGIC: PERSIAPAN EDIT ---
-if (isset($_GET['edit'])) {
-    $id = $_GET['edit'];
-    $q_edit = mysqli_query($conn, "SELECT * FROM siswa WHERE id='$id'");
-    if(mysqli_num_rows($q_edit) > 0){
-        $d = mysqli_fetch_assoc($q_edit);
-        $nis_val = $d['nis']; $nama_val = $d['nama']; $kelas_val = $d['kelas']; 
-        $rfid_val = $d['rfid_uid']; $id_val = $d['id']; $foto_val = $d['foto'];
-        $is_edit = true;
-    }
-}
-
-// --- LOGIC: TAMBAH SISWA ---
-if (isset($_POST['tambah'])) {
-    $nis = mysqli_real_escape_string($conn, $_POST['nis']);
-    $nama = mysqli_real_escape_string($conn, $_POST['nama']);
-    $kelas = mysqli_real_escape_string($conn, $_POST['kelas']);
-    $rfid = mysqli_real_escape_string($conn, $_POST['rfid']);
-    
-    $cek = mysqli_query($conn, "SELECT * FROM siswa WHERE rfid_uid='$rfid'");
-    if(mysqli_num_rows($cek) > 0){ 
-        $swal_type = "error"; $swal_msg = "RFID sudah terdaftar!";
-    } else {
-        // Handle Upload
-        $foto_nama = "";
-        if (!empty($_FILES['foto']['name'])) {
-            $foto_nama = uploadFoto($_FILES['foto'], $nis);
-        }
-
-        $query = "INSERT INTO siswa (nis, nama, kelas, rfid_uid, foto) VALUES ('$nis', '$nama', '$kelas', '$rfid', '$foto_nama')";
-        if(mysqli_query($conn, $query)){
-            $swal_type = "success"; $swal_msg = "Siswa berhasil ditambahkan!";
-            $nis_val=""; $nama_val=""; $kelas_val=""; $rfid_val=""; // Clear form
-        } else {
-            $swal_type = "error"; $swal_msg = "Database Error: " . mysqli_error($conn);
-        }
-    }
-}
-
-// --- LOGIC: UPDATE SISWA ---
-if (isset($_POST['update'])) {
-    $id = $_POST['id_siswa'];
-    $nis = mysqli_real_escape_string($conn, $_POST['nis']);
-    $nama = mysqli_real_escape_string($conn, $_POST['nama']);
-    $kelas = mysqli_real_escape_string($conn, $_POST['kelas']);
-    $rfid = mysqli_real_escape_string($conn, $_POST['rfid']);
-    
-    $cek = mysqli_query($conn, "SELECT * FROM siswa WHERE rfid_uid='$rfid' AND id != '$id'");
-    if(mysqli_num_rows($cek) > 0){ 
-        $swal_type = "error"; $swal_msg = "RFID sudah dipakai siswa lain!";
-    } else { 
-        // Handle Foto Update
-        $query_update = "UPDATE siswa SET nis='$nis', nama='$nama', kelas='$kelas', rfid_uid='$rfid'";
-        
-        if (!empty($_FILES['foto']['name'])) {
-            // Upload foto baru
-            $foto_baru = uploadFoto($_FILES['foto'], $nis);
-            if($foto_baru){
-                $query_update .= ", foto='$foto_baru'";
-                
-                // Hapus foto lama
-                $q_old = mysqli_query($conn, "SELECT foto FROM siswa WHERE id='$id'");
-                $d_old = mysqli_fetch_assoc($q_old);
-                if(!empty($d_old['foto']) && file_exists("uploads/siswa/".$d_old['foto'])){
-                    unlink("uploads/siswa/".$d_old['foto']);
+                        if (!empty($nis) && !empty($nama)) {
+                            // Check Duplicate
+                            $cek = mysqli_query($conn, "SELECT id FROM siswa WHERE nis='$nis' OR rfid_uid='$rfid'");
+                            if (mysqli_num_rows($cek) > 0) {
+                                $count_fail++;
+                            } else {
+                                $insert = mysqli_query($conn, "INSERT INTO siswa (nis, nama, kelas, rfid_uid) VALUES ('$nis', '$nama', '$kelas', '$rfid')");
+                                if ($insert) $count_success++;
+                                else $count_fail++;
+                            }
+                        }
+                    }
+                    $swal_type = "success";
+                    $swal_msg = "Import Selesai! Berhasil: $count_success, Gagal/Duplikat: $count_fail";
+                } else {
+                    $swal_type = "error"; $swal_msg = "Gagal membaca file Excel.";
                 }
+            } else {
+                $swal_type = "error"; $swal_msg = "Library SimpleXLSX belum terpasang.";
+            }
+        } else {
+            $swal_type = "error"; $swal_msg = "Pilih file Excel (.xlsx) terlebih dahulu!";
+        }
+    }
+
+    // Generate Alpha
+    if (isset($_POST['generate_alpha'])) {
+        $today = date('Y-m-d');
+        // Find students who haven't tapped today
+        $q = mysqli_query($conn, "SELECT * FROM siswa WHERE rfid_uid NOT IN (SELECT rfid_uid FROM log_absensi WHERE DATE(waktu) = '$today')");
+        if (mysqli_num_rows($q) > 0) {
+            $count = 0;
+            while ($row = mysqli_fetch_assoc($q)) {
+                $uid = $row['rfid_uid'];
+                mysqli_query($conn, "INSERT INTO log_absensi (rfid_uid, waktu, status) VALUES ('$uid', '$today 08:00:00', 'Alpha (Tidak Hadir)')");
+                $count++;
+            }
+            $swal_type = "success"; $swal_msg = "Berhasil! $count siswa ditandai Alpha.";
+        } else {
+            $swal_type = "info"; $swal_msg = "Semua siswa sudah tercatat kehadirannya hari ini.";
+        }
+    }
+
+    // Prepare Edit Student
+    if (isset($_GET['edit'])) {
+        $id = $_GET['edit'];
+        $d = mysqli_fetch_assoc(mysqli_query($conn, "SELECT * FROM siswa WHERE id='$id'"));
+        if($d) {
+            $nis_val = $d['nis']; $nama_val = $d['nama']; $kelas_val = $d['kelas']; 
+            $rfid_val = $d['rfid_uid']; $id_val = $d['id']; $foto_val = $d['foto'];
+            $is_edit = true;
+        }
+    }
+
+    // Add Student
+    if (isset($_POST['tambah_siswa'])) {
+        $nis = $_POST['nis']; $nama = $_POST['nama']; $kelas = $_POST['kelas']; $rfid = $_POST['rfid'];
+        $cek = mysqli_query($conn, "SELECT * FROM siswa WHERE rfid_uid='$rfid' OR nis='$nis'");
+        if(mysqli_num_rows($cek) > 0){ $swal_type = "error"; $swal_msg = "NIS atau RFID sudah terdaftar!"; } 
+        else {
+            $foto = !empty($_FILES['foto']['name']) ? uploadFoto($_FILES['foto'], $nis) : "";
+            mysqli_query($conn, "INSERT INTO siswa (nis, nama, kelas, rfid_uid, foto) VALUES ('$nis', '$nama', '$kelas', '$rfid', '$foto')");
+            $swal_type = "success"; $swal_msg = "Siswa berhasil ditambahkan!";
+        }
+    }
+
+    // Update Student
+    if (isset($_POST['update_siswa'])) {
+        $id = $_POST['id_siswa']; $nis = $_POST['nis']; $nama = $_POST['nama']; $kelas = $_POST['kelas']; $rfid = $_POST['rfid'];
+        $foto_sql = "";
+        if (!empty($_FILES['foto']['name'])) {
+            $foto_baru = uploadFoto($_FILES['foto'], $nis);
+            if($foto_baru) $foto_sql = ", foto='$foto_baru'";
+        }
+        $cek = mysqli_query($conn, "SELECT * FROM siswa WHERE (rfid_uid='$rfid' OR nis='$nis') AND id != '$id'");
+        if(mysqli_num_rows($cek) > 0){
+             $swal_type = "error"; $swal_msg = "NIS atau RFID sudah dipakai siswa lain!";
+        } else {
+            mysqli_query($conn, "UPDATE siswa SET nis='$nis', nama='$nama', kelas='$kelas', rfid_uid='$rfid' $foto_sql WHERE id='$id'");
+            echo "<script>window.location='admin.php?page=siswa';</script>";
+        }
+    }
+
+    // Delete Student
+    if (isset($_GET['hapus'])) {
+        $q_foto = mysqli_fetch_assoc(mysqli_query($conn, "SELECT foto FROM siswa WHERE id='$_GET[hapus]'"));
+        if(!empty($q_foto['foto']) && file_exists("uploads/siswa/".$q_foto['foto'])){
+            unlink("uploads/siswa/".$q_foto['foto']);
+        }
+        mysqli_query($conn, "DELETE FROM siswa WHERE id='$_GET[hapus]'");
+        echo "<script>window.location='admin.php?page=siswa';</script>";
+    }
+}
+
+// =================================================================================
+// LOGIC: TEACHER MANAGEMENT (WALI KELAS)
+// =================================================================================
+if ($page == 'wali') {
+    // Prepare Edit Teacher
+    if (isset($_GET['edit'])) {
+        $id = $_GET['edit'];
+        $d = mysqli_fetch_assoc(mysqli_query($conn, "SELECT * FROM wali_kelas WHERE id='$id'"));
+        if($d) {
+            $id_wali = $d['id']; $user_wali = $d['username']; $nama_wali = $d['nama_lengkap']; $kelas_wali = $d['kelas_binaan'];
+            $is_edit = true;
+        }
+    }
+
+    // Add Teacher
+    if (isset($_POST['tambah_wali'])) {
+        $user = $_POST['username']; $pass = $_POST['password']; $nama = $_POST['nama_lengkap']; $kelas = $_POST['kelas_binaan'];
+        $cek = mysqli_query($conn, "SELECT * FROM wali_kelas WHERE username='$user'");
+        if(mysqli_num_rows($cek) > 0){ 
+            $swal_type = "error"; $swal_msg = "Username sudah dipakai!"; 
+        } else {
+            $cek_kelas = mysqli_query($conn, "SELECT * FROM wali_kelas WHERE kelas_binaan='$kelas'");
+            if(mysqli_num_rows($cek_kelas) > 0){
+                $swal_type = "warning"; $swal_msg = "Kelas $kelas sudah memiliki Wali Kelas!";
+            } else {
+                mysqli_query($conn, "INSERT INTO wali_kelas (username, password, nama_lengkap, kelas_binaan) VALUES ('$user', '$pass', '$nama', '$kelas')");
+                $swal_type = "success"; $swal_msg = "Wali Kelas berhasil ditambahkan!";
             }
         }
+    }
 
-        $query_update .= " WHERE id='$id'";
+    // Update Teacher
+    if (isset($_POST['update_wali'])) {
+        $id = $_POST['id_wali']; $user = $_POST['username']; $pass = $_POST['password']; $nama = $_POST['nama_lengkap']; $kelas = $_POST['kelas_binaan'];
         
-        if(mysqli_query($conn, $query_update)){
-            echo "<script>alert('Data berhasil diupdate!'); window.location='admin.php';</script>";
-        } else {
-            $swal_type = "error"; $swal_msg = "Gagal Update: " . mysqli_error($conn);
+        $sql_pass = "";
+        if(!empty($pass)) { $sql_pass = ", password='$pass'"; } 
+
+        mysqli_query($conn, "UPDATE wali_kelas SET username='$user', nama_lengkap='$nama', kelas_binaan='$kelas' $sql_pass WHERE id='$id'");
+        echo "<script>window.location='admin.php?page=wali';</script>";
+    }
+
+    // Delete Teacher
+    if (isset($_GET['hapus'])) {
+        mysqli_query($conn, "DELETE FROM wali_kelas WHERE id='$_GET[hapus]'");
+        echo "<script>window.location='admin.php?page=wali';</script>";
+    }
+}
+
+// =================================================================================
+// LOGIC: BK MANAGEMENT (GURU BK)
+// =================================================================================
+if ($page == 'bk') {
+    // Prepare Edit BK
+    if (isset($_GET['edit'])) {
+        $id = $_GET['edit'];
+        $d = mysqli_fetch_assoc(mysqli_query($conn, "SELECT * FROM user_bk WHERE id='$id'"));
+        if($d) {
+            $id_bk = $d['id']; $user_bk = $d['username']; $nama_bk = $d['nama_lengkap'];
+            $is_edit = true;
         }
     }
-}
 
-// --- LOGIC: HAPUS SISWA ---
-if (isset($_GET['hapus'])) {
-    $id = $_GET['hapus'];
-    
-    // Hapus file foto dulu
-    $q_cek = mysqli_query($conn, "SELECT foto FROM siswa WHERE id='$id'");
-    $d_cek = mysqli_fetch_assoc($q_cek);
-    if(!empty($d_cek['foto']) && file_exists("uploads/siswa/".$d_cek['foto'])){
-        unlink("uploads/siswa/".$d_cek['foto']);
+    // Add BK
+    if (isset($_POST['tambah_bk'])) {
+        $user = $_POST['username']; $pass = $_POST['password']; $nama = $_POST['nama_lengkap'];
+        $cek = mysqli_query($conn, "SELECT * FROM user_bk WHERE username='$user'");
+        if(mysqli_num_rows($cek) > 0){ 
+            $swal_type = "error"; $swal_msg = "Username sudah dipakai!"; 
+        } else {
+            mysqli_query($conn, "INSERT INTO user_bk (username, password, nama_lengkap) VALUES ('$user', '$pass', '$nama')");
+            $swal_type = "success"; $swal_msg = "Guru BK berhasil ditambahkan!";
+        }
     }
 
-    mysqli_query($conn, "DELETE FROM siswa WHERE id='$id'");
-    echo "<script>alert('Data dihapus!'); window.location='admin.php';</script>";
+    // Update BK
+    if (isset($_POST['update_bk'])) {
+        $id = $_POST['id_bk']; $user = $_POST['username']; $pass = $_POST['password']; $nama = $_POST['nama_lengkap'];
+        
+        $sql_pass = "";
+        if(!empty($pass)) { $sql_pass = ", password='$pass'"; } 
+
+        mysqli_query($conn, "UPDATE user_bk SET username='$user', nama_lengkap='$nama' $sql_pass WHERE id='$id'");
+        echo "<script>window.location='admin.php?page=bk';</script>";
+    }
+
+    // Delete BK
+    if (isset($_GET['hapus'])) {
+        mysqli_query($conn, "DELETE FROM user_bk WHERE id='$_GET[hapus]'");
+        echo "<script>window.location='admin.php?page=bk';</script>";
+    }
 }
 
-// --- DATA DASHBOARD KECIL ---
-$today = date('Y-m-d');
-$q_total = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) as t FROM siswa"));
-$q_sudah = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(DISTINCT rfid_uid) as t FROM log_absensi WHERE DATE(waktu) = '$today'"));
-$belum_hadir = $q_total['t'] - $q_sudah['t'];
+
+// --- DASHBOARD DATA COUNTS ---
+$q_total_siswa = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) as t FROM siswa"));
+$q_total_wali = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) as t FROM wali_kelas"));
+$q_total_bk = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) as t FROM user_bk"));
 ?>
 
 <!DOCTYPE html>
@@ -166,229 +267,177 @@ $belum_hadir = $q_total['t'] - $q_sudah['t'];
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Panel - E-Absensi</title>
-    
-    <!-- Tailwind CSS -->
+    <link rel="shortcut icon" href="gambar/logo.jpg">
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Google Fonts: Outfit -->
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <!-- SweetAlert2 -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-
-    <style>
-        body { font-family: 'Outfit', sans-serif; background-color: #f8fafc; }
-        .glass-nav {
-            background: rgba(255, 255, 255, 0.8);
-            backdrop-filter: blur(12px);
-            border-bottom: 1px solid rgba(226, 232, 240, 0.8);
-        }
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-        .table-row-hover:hover td { background-color: #f8fafc; }
-    </style>
+    <style>body { font-family: 'Outfit', sans-serif; background-color: #f1f5f9; }</style>
 </head>
-<body class="text-slate-800">
+<body class="text-slate-800 flex flex-col min-h-screen">
 
-    <!-- NAVBAR MODERN -->
-    <nav class="glass-nav fixed w-full z-50 top-0 transition-all duration-300">
+    <!-- NAVBAR -->
+    <nav class="bg-white/90 backdrop-blur border-b border-slate-200 fixed w-full z-50 top-0">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between items-center h-20">
                 <div class="flex items-center gap-3">
-                    <div class="bg-gradient-to-tr from-blue-600 to-indigo-600 p-2.5 rounded-xl text-white shadow-lg shadow-indigo-500/20">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    <div class="bg-gradient-to-tr from-blue-600 to-indigo-600 p-2.5 rounded-xl text-white shadow-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
                     </div>
                     <div>
-                        <h1 class="text-xl font-bold text-slate-800 tracking-tight">Admin Panel</h1>
-                        <p class="text-xs text-slate-500 font-medium">Manajemen Data Siswa</p>
+                        <h1 class="text-xl font-bold text-slate-800">Admin Panel</h1>
+                        <p class="text-xs text-slate-500">Manajemen Data Sekolah</p>
                     </div>
                 </div>
-
-                <div class="flex items-center gap-3">
-                    <a href="index.php" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:text-blue-600 hover:bg-blue-50 transition-all">Dashboard</a>
-                    <a href="logout.php" class="px-4 py-2 rounded-lg text-sm font-medium text-rose-600 hover:bg-rose-50 transition-all flex items-center gap-2">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
-                        Logout
+                <div class="flex items-center gap-2">
+                    <!-- Mode Scan Button -->
+                    <a href="scan.php" class="hidden md:flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 shadow-md shadow-emerald-200 transition-all">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"></path><path d="M17 3h2a2 2 0 0 1 2 2v2"></path><path d="M21 17v2a2 2 0 0 1-2 2h-2"></path><path d="M7 21H5a2 2 0 0 1-2-2v-2"></path></svg>
+                        Mode Scan
                     </a>
-                    <a href="admin_libur.php" class="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl font-bold shadow-lg flex items-center gap-2 transition">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-                      Atur Hari Libur
-                    </a>
-
+                    
+                    <a href="index.php" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Dashboard</a>
+                    <a href="logout.php" class="px-4 py-2 rounded-lg text-sm font-medium text-red-600 hover:bg-red-50">Logout</a>
                 </div>
             </div>
         </div>
     </nav>
 
     <!-- MAIN CONTENT -->
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-28 pb-12">
-
-        <!-- STATISTIK HEADER -->
-        <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 mb-8 flex flex-col md:flex-row justify-between items-center gap-6">
-            <div class="flex items-center gap-4 w-full md:w-auto">
-                <div class="p-4 bg-blue-50 text-blue-600 rounded-xl">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-                </div>
-                <div>
-                    <h2 class="text-lg font-bold text-slate-800">Status Hari Ini</h2>
-                    <div class="flex gap-4 text-sm mt-1">
-                        <span class="text-slate-500">Total: <strong class="text-slate-800"><?php echo $q_total['t']; ?></strong></span>
-                        <span class="text-slate-500">|</span>
-                        <span class="text-slate-500">Belum Hadir: <strong class="text-rose-500"><?php echo $belum_hadir; ?></strong></span>
-                    </div>
-                </div>
-            </div>
-            
-            <form method="POST" class="w-full md:w-auto" id="formAlpha">
-                <button type="button" onclick="confirmAlpha()" class="w-full md:w-auto bg-rose-500 hover:bg-rose-600 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-rose-200 flex items-center justify-center gap-2 transition transform hover:scale-105">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="23" y1="11" x2="17" y2="11"></line></svg>
-                    Tandai Sisa sbg Alpha
-                </button>
-                <input type="hidden" name="generate_alpha" value="1">
-            </form>
+    <main class="max-w-7xl mx-auto px-4 pt-28 pb-12 flex-grow">
+        
+        <!-- Mobile Scan Button -->
+        <div class="md:hidden mb-6">
+            <a href="scan.php" class="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-teal-500 shadow-lg">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"></path><path d="M17 3h2a2 2 0 0 1 2 2v2"></path><path d="M21 17v2a2 2 0 0 1-2 2h-2"></path><path d="M7 21H5a2 2 0 0 1-2-2v-2"></path></svg>
+                Buka Mode Scan Kiosk
+            </a>
         </div>
 
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            
-            <!-- FORM SECTION (Kiri) -->
-            <div class="lg:col-span-1">
-                <div class="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden sticky top-28">
-                    <div class="bg-slate-50 px-6 py-4 border-b border-slate-200 flex justify-between items-center">
-                        <h3 class="font-bold text-slate-800 flex items-center gap-2">
-                            <?php if($is_edit): ?>
-                                <span class="w-2 h-2 rounded-full bg-amber-500"></span> Edit Data
-                            <?php else: ?>
-                                <span class="w-2 h-2 rounded-full bg-blue-500"></span> Tambah Siswa
-                            <?php endif; ?>
-                        </h3>
-                        <?php if($is_edit): ?> <span class="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded font-bold">Mode Edit</span> <?php endif; ?>
-                    </div>
-                    
-                    <!-- Tambahkan enctype="multipart/form-data" untuk upload -->
-                    <form method="POST" enctype="multipart/form-data" class="p-6 space-y-5">
-                        <input type="hidden" name="id_siswa" value="<?php echo $id_val; ?>">
+        <!-- TAB NAVIGATION -->
+        <div class="flex space-x-2 mb-8 border-b border-slate-200 pb-1 overflow-x-auto">
+            <a href="admin.php?page=siswa" class="px-6 py-2 rounded-t-lg font-bold transition whitespace-nowrap <?php echo ($page=='siswa') ? 'bg-blue-600 text-white shadow-lg' : 'bg-white text-slate-500 hover:bg-slate-100'; ?>">
+                Data Siswa (<?php echo $q_total_siswa['t']; ?>)
+            </a>
+            <a href="admin.php?page=wali" class="px-6 py-2 rounded-t-lg font-bold transition whitespace-nowrap <?php echo ($page=='wali') ? 'bg-teal-600 text-white shadow-lg' : 'bg-white text-slate-500 hover:bg-slate-100'; ?>">
+                Data Wali Kelas (<?php echo $q_total_wali['t']; ?>)
+            </a>
+            <a href="admin.php?page=bk" class="px-6 py-2 rounded-t-lg font-bold transition whitespace-nowrap <?php echo ($page=='bk') ? 'bg-rose-600 text-white shadow-lg' : 'bg-white text-slate-500 hover:bg-slate-100'; ?>">
+                Data Guru BK (<?php echo $q_total_bk['t']; ?>)
+            </a>
+            <a href="admin_libur.php" class="px-6 py-2 rounded-t-lg font-bold bg-white text-slate-500 hover:bg-slate-100 transition whitespace-nowrap">
+                Hari Libur
+            </a>
+            <a href="gate_pass.php" class="px-6 py-2 rounded-t-lg font-bold bg-white text-slate-500 hover:bg-slate-100 transition whitespace-nowrap">
+                Gate Pass (Izin)
+            </a>
+            <a href="admin_sp.php" class="px-6 py-2 rounded-t-lg font-bold bg-white text-slate-500 hover:bg-slate-100 transition whitespace-nowrap">
+                Monitoring SP
+            </a>
+             <a href="admin_pengumuman.php" class="px-6 py-2 rounded-t-lg font-bold bg-white text-slate-500 hover:bg-slate-100 transition whitespace-nowrap">
+                Info (Running Text)
+            </a>
+        </div>
 
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase mb-1.5 ml-1">NIS</label>
-                            <input type="text" name="nis" value="<?php echo $nis_val; ?>" required class="w-full px-4 py-3 rounded-xl bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none transition font-mono text-sm" placeholder="1001">
-                        </div>
-
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase mb-1.5 ml-1">Nama Lengkap</label>
-                            <input type="text" name="nama" value="<?php echo $nama_val; ?>" required class="w-full px-4 py-3 rounded-xl bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none transition text-sm" placeholder="Nama Siswa">
-                        </div>
-                        
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase mb-1.5 ml-1">Kelas</label>
-                            <div class="relative">
-                                <select name="kelas" required class="w-full px-4 py-3 rounded-xl bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none transition appearance-none text-sm cursor-pointer">
-                                    <option value="">-- Pilih Kelas --</option>
-                                    <?php foreach($pilihan_kelas as $opsi): ?>
-                                        <option value="<?php echo $opsi; ?>" <?php echo ($kelas_val == $opsi) ? 'selected' : ''; ?>><?php echo $opsi; ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                                <div class="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none text-slate-500">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase mb-1.5 ml-1">UID Kartu RFID</label>
-                            <div class="relative group">
-                                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg>
-                                </div>
-                                <input type="text" name="rfid" value="<?php echo $rfid_val; ?>" required class="w-full pl-10 pr-4 py-3 rounded-xl bg-yellow-50 border border-yellow-200 focus:border-yellow-500 focus:ring-2 focus:ring-yellow-200 outline-none transition font-mono text-sm text-slate-700" placeholder="Tap Kartu RFID...">
-                            </div>
-                        </div>
-
-                        <!-- INPUT FOTO BARU -->
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase mb-1.5 ml-1">Foto Siswa</label>
-                            <?php if($is_edit && !empty($foto_val)): ?>
-                                <div class="flex items-center gap-3 mb-2">
-                                    <img src="uploads/siswa/<?php echo $foto_val; ?>" class="w-12 h-12 rounded-full object-cover border">
-                                    <span class="text-xs text-slate-400 italic">Foto saat ini</span>
-                                </div>
-                            <?php endif; ?>
-                            <input type="file" name="foto" accept="image/*" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"/>
-                        </div>
-
-                        <div class="pt-2">
-                            <?php if($is_edit): ?>
-                                <div class="flex gap-3">
-                                    <button type="submit" name="update" class="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-amber-500/30 transition transform active:scale-95">Update Data</button>
-                                    <a href="admin.php" class="flex-none px-5 py-3 bg-slate-200 hover:bg-slate-300 text-slate-600 rounded-xl font-bold transition text-center">Batal</a>
-                                </div>
-                            <?php else: ?>
-                                <button type="submit" name="tambah" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl font-bold shadow-lg shadow-indigo-500/30 transition transform active:scale-95 flex justify-center items-center gap-2">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                                    Simpan Siswa
-                                </button>
-                            <?php endif; ?>
-                        </div>
+        <!-- ========================== PAGE: SISWA ========================== -->
+        <?php if($page == 'siswa'): ?>
+        
+        <div class="flex flex-col md:flex-row justify-between mb-6 gap-4">
+            <!-- PANEL IMPORT EXCEL -->
+            <div class="bg-emerald-50 border border-emerald-200 p-4 rounded-xl flex-1 flex flex-col md:flex-row items-center gap-4">
+                <div class="p-3 bg-emerald-100 rounded-full text-emerald-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                </div>
+                <div class="flex-grow w-full">
+                    <h4 class="font-bold text-emerald-800">Import Data dari Excel</h4>
+                    <p class="text-xs text-emerald-600 mb-2">Upload file .xlsx (Urutan Kolom: NIS, Nama, Kelas, RFID)</p>
+                    <form method="POST" enctype="multipart/form-data" class="flex gap-2">
+                        <input type="file" name="file_excel" accept=".xlsx" class="block w-full text-xs text-slate-500 file:mr-2 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200" required>
+                        <button type="submit" name="import_excel" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold transition">Upload</button>
                     </form>
                 </div>
             </div>
 
-            <!-- TABLE SECTION (Kanan) -->
-            <div class="lg:col-span-2">
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-full max-h-[800px]">
-                    <div class="px-6 py-5 border-b border-slate-200 bg-white sticky top-0 z-20">
-                        <h3 class="font-bold text-lg text-slate-800">Database Siswa</h3>
-                    </div>
+            <!-- Tombol Alpha -->
+            <div class="flex items-center">
+                <form method="POST" onsubmit="return confirm('Tandai semua siswa yang BELUM scan hari ini sebagai ALPHA?')">
+                    <button type="submit" name="generate_alpha" class="bg-red-500 hover:bg-red-600 text-white px-4 py-3 rounded-xl text-sm font-bold shadow flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                        Generate Alpha
+                    </button>
+                </form>
+            </div>
+        </div>
 
-                    <div class="overflow-x-auto custom-scrollbar flex-grow">
-                        <table class="w-full text-left text-sm border-collapse">
-                            <thead class="bg-slate-50 text-slate-500 uppercase font-bold text-xs sticky top-0 z-10 shadow-sm">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Form Siswa -->
+            <div class="lg:col-span-1">
+                <div class="bg-white rounded-2xl shadow-lg border border-slate-200 p-6 sticky top-28">
+                    <h3 class="font-bold text-slate-800 mb-4 flex items-center gap-2">
+                        <?php if($is_edit): ?><span class="w-2 h-6 bg-amber-500 rounded-full"></span> Edit Siswa<?php else: ?><span class="w-2 h-6 bg-blue-500 rounded-full"></span> Tambah Siswa<?php endif; ?>
+                    </h3>
+                    <form method="POST" enctype="multipart/form-data" class="space-y-4">
+                        <input type="hidden" name="id_siswa" value="<?php echo $id_val; ?>">
+                        <input type="text" name="nis" value="<?php echo $nis_val; ?>" required class="w-full p-3 rounded-xl bg-slate-50 border focus:border-blue-500 outline-none text-sm" placeholder="NIS">
+                        <input type="text" name="nama" value="<?php echo $nama_val; ?>" required class="w-full p-3 rounded-xl bg-slate-50 border focus:border-blue-500 outline-none text-sm" placeholder="Nama Lengkap">
+                        <select name="kelas" required class="w-full p-3 rounded-xl bg-slate-50 border focus:border-blue-500 outline-none text-sm">
+                            <option value="">-- Pilih Kelas --</option>
+                            <?php foreach($pilihan_kelas as $k): ?>
+                                <option value="<?php echo $k; ?>" <?php echo ($kelas_val==$k)?'selected':''; ?>><?php echo $k; ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <input type="text" name="rfid" value="<?php echo $rfid_val; ?>" required class="w-full p-3 rounded-xl bg-yellow-50 border border-yellow-200 focus:border-yellow-500 outline-none text-sm font-mono" placeholder="Tap Kartu RFID...">
+                        <div class="border-t pt-2">
+                            <label class="text-xs font-bold text-slate-500">Foto Siswa (Opsional)</label>
+                            <input type="file" name="foto" accept="image/*" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 mt-1"/>
+                        </div>
+
+                        <?php if($is_edit): ?>
+                            <div class="flex gap-2">
+                                <button type="submit" name="update_siswa" class="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-2 rounded-xl font-bold">Update</button>
+                                <a href="admin.php?page=siswa" class="flex-1 bg-slate-200 text-slate-600 py-2 rounded-xl font-bold text-center">Batal</a>
+                            </div>
+                        <?php else: ?>
+                            <button type="submit" name="tambah_siswa" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-xl font-bold">Simpan</button>
+                        <?php endif; ?>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Tabel Siswa -->
+            <div class="lg:col-span-2">
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="overflow-x-auto max-h-[600px]">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-slate-50 text-slate-500 uppercase text-xs font-bold sticky top-0 z-10">
                                 <tr>
                                     <th class="px-6 py-4">Siswa</th>
-                                    <th class="px-6 py-4">NIS</th>
                                     <th class="px-6 py-4">Kelas</th>
-                                    <th class="px-6 py-4">RFID UID</th>
+                                    <th class="px-6 py-4">RFID</th>
                                     <th class="px-6 py-4 text-center">Aksi</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100">
                                 <?php 
                                 $data = mysqli_query($conn, "SELECT * FROM siswa ORDER BY id DESC");
-                                if(mysqli_num_rows($data) > 0){
-                                    while($d = mysqli_fetch_array($data)){
-                                        $foto_show = !empty($d['foto']) ? "uploads/siswa/".$d['foto'] : "https://ui-avatars.com/api/?name=".urlencode($d['nama'])."&background=random";
+                                while($d = mysqli_fetch_array($data)){
+                                    $foto = !empty($d['foto']) ? "uploads/siswa/".$d['foto'] : "https://ui-avatars.com/api/?name=".urlencode($d['nama']);
                                 ?>
-                                    <tr class="table-row-hover transition-colors duration-150 group">
-                                        <td class="px-6 py-4">
-                                            <div class="flex items-center gap-3">
-                                                <img src="<?php echo $foto_show; ?>" class="w-8 h-8 rounded-full object-cover border border-slate-200">
-                                                <span class="font-bold text-slate-700"><?php echo htmlspecialchars($d['nama']); ?></span>
-                                            </div>
-                                        </td>
-                                        <td class="px-6 py-4 font-mono text-slate-500 font-medium"><?php echo htmlspecialchars($d['nis']); ?></td>
-                                        <td class="px-6 py-4">
-                                            <span class="bg-indigo-50 text-indigo-600 text-[11px] px-2.5 py-1 rounded-md font-bold border border-indigo-100 uppercase tracking-wide">
-                                                <?php echo htmlspecialchars($d['kelas']); ?>
-                                            </span>
-                                        </td>
-                                        <td class="px-6 py-4 font-mono text-xs text-slate-400 bg-slate-50/50 rounded-lg px-2 py-1 w-fit">
-                                            <?php echo htmlspecialchars($d['rfid_uid']); ?>
-                                        </td>
-                                        <td class="px-6 py-4 text-center">
-                                            <div class="flex justify-center gap-2 opacity-80 group-hover:opacity-100 transition-opacity">
-                                                <a href="admin.php?edit=<?php echo $d['id']; ?>" class="p-2 bg-amber-50 text-amber-600 rounded-lg hover:bg-amber-500 hover:text-white transition border border-amber-100 shadow-sm" title="Edit">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-                                                </a>
-                                                <button onclick="confirmDelete(<?php echo $d['id']; ?>)" class="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-500 hover:text-white transition border border-rose-100 shadow-sm" title="Hapus">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
-                                                </button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                <?php 
-                                    }
-                                } else {
-                                    echo "<tr><td colspan='5' class='px-6 py-16 text-center text-slate-400 italic'>Belum ada data siswa.</td></tr>";
-                                }
-                                ?>
+                                <tr class="hover:bg-slate-50 transition">
+                                    <td class="px-6 py-4 flex items-center gap-3">
+                                        <img src="<?php echo $foto; ?>" class="w-8 h-8 rounded-full object-cover border">
+                                        <div>
+                                            <p class="font-bold text-slate-700"><?php echo $d['nama']; ?></p>
+                                            <p class="text-xs text-slate-400 font-mono"><?php echo $d['nis']; ?></p>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-4"><span class="bg-blue-50 text-blue-600 text-xs px-2 py-1 rounded border border-blue-100"><?php echo $d['kelas']; ?></span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-slate-400"><?php echo $d['rfid_uid']; ?></td>
+                                    <td class="px-6 py-4 text-center flex justify-center gap-2">
+                                        <a href="admin.php?page=siswa&edit=<?php echo $d['id']; ?>" class="text-amber-500 hover:text-amber-600"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></a>
+                                        <a href="admin.php?page=siswa&hapus=<?php echo $d['id']; ?>" onclick="return confirm('Hapus?')" class="text-red-500 hover:text-red-600"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+                                    </td>
+                                </tr>
+                                <?php } ?>
                             </tbody>
                         </table>
                     </div>
@@ -396,20 +445,187 @@ $belum_hadir = $q_total['t'] - $q_sudah['t'];
             </div>
         </div>
 
-    </div>
+        <!-- ========================== PAGE: WALI KELAS ========================== -->
+        <?php elseif($page == 'wali'): ?>
+        
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Form Wali -->
+            <div class="lg:col-span-1">
+                <div class="bg-white rounded-2xl shadow-lg border border-slate-200 p-6 sticky top-28">
+                    <h3 class="font-bold text-slate-800 mb-4 flex items-center gap-2">
+                        <?php if($is_edit): ?><span class="w-2 h-6 bg-amber-500 rounded-full"></span> Edit Wali Kelas<?php else: ?><span class="w-2 h-6 bg-teal-500 rounded-full"></span> Tambah Wali Kelas<?php endif; ?>
+                    </h3>
+                    <form method="POST" class="space-y-4">
+                        <input type="hidden" name="id_wali" value="<?php echo $id_wali; ?>">
+                        
+                        <div>
+                            <label class="text-xs font-bold text-slate-500">Nama Lengkap</label>
+                            <input type="text" name="nama_lengkap" value="<?php echo $nama_wali; ?>" required class="w-full p-3 rounded-xl bg-slate-50 border focus:border-teal-500 outline-none text-sm" placeholder="Nama Guru">
+                        </div>
+                        
+                        <div>
+                            <label class="text-xs font-bold text-slate-500">Kelas Binaan</label>
+                            <select name="kelas_binaan" required class="w-full p-3 rounded-xl bg-slate-50 border focus:border-teal-500 outline-none text-sm">
+                                <option value="">-- Pilih Kelas --</option>
+                                <?php foreach($pilihan_kelas as $k): ?>
+                                    <option value="<?php echo $k; ?>" <?php echo ($kelas_wali==$k)?'selected':''; ?>><?php echo $k; ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-xs font-bold text-slate-500">Username</label>
+                                <input type="text" name="username" value="<?php echo $user_wali; ?>" required class="w-full p-3 rounded-xl bg-slate-50 border focus:border-teal-500 outline-none text-sm">
+                            </div>
+                            <div>
+                                <label class="text-xs font-bold text-slate-500">Password</label>
+                                <input type="text" name="password" class="w-full p-3 rounded-xl bg-slate-50 border focus:border-teal-500 outline-none text-sm" placeholder="<?php echo $is_edit ? '(Biarkan kosong)' : 'Password'; ?>" <?php echo $is_edit ? '' : 'required'; ?>>
+                            </div>
+                        </div>
+
+                        <?php if($is_edit): ?>
+                            <div class="flex gap-2">
+                                <button type="submit" name="update_wali" class="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-2 rounded-xl font-bold">Update</button>
+                                <a href="admin.php?page=wali" class="flex-1 bg-slate-200 text-slate-600 py-2 rounded-xl font-bold text-center">Batal</a>
+                            </div>
+                        <?php else: ?>
+                            <button type="submit" name="tambah_wali" class="w-full bg-teal-600 hover:bg-teal-700 text-white py-2 rounded-xl font-bold">Simpan Wali Kelas</button>
+                        <?php endif; ?>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Tabel Wali -->
+            <div class="lg:col-span-2">
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-slate-50 text-slate-500 uppercase text-xs font-bold">
+                                <tr>
+                                    <th class="px-6 py-4">Nama Wali Kelas</th>
+                                    <th class="px-6 py-4">Username</th>
+                                    <th class="px-6 py-4">Kelas Binaan</th>
+                                    <th class="px-6 py-4 text-center">Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <?php 
+                                $data = mysqli_query($conn, "SELECT * FROM wali_kelas ORDER BY kelas_binaan ASC");
+                                if(mysqli_num_rows($data) > 0) {
+                                    while($d = mysqli_fetch_array($data)){
+                                ?>
+                                <tr class="hover:bg-slate-50 transition">
+                                    <td class="px-6 py-4 font-bold text-slate-700"><?php echo $d['nama_lengkap']; ?></td>
+                                    <td class="px-6 py-4 font-mono text-slate-500"><?php echo $d['username']; ?></td>
+                                    <td class="px-6 py-4"><span class="bg-teal-50 text-teal-600 text-xs px-2 py-1 rounded border border-teal-100"><?php echo $d['kelas_binaan']; ?></span></td>
+                                    <td class="px-6 py-4 text-center flex justify-center gap-2">
+                                        <a href="admin.php?page=wali&edit=<?php echo $d['id']; ?>" class="text-amber-500 hover:text-amber-600"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></a>
+                                        <a href="admin.php?page=wali&hapus=<?php echo $d['id']; ?>" onclick="return confirm('Hapus Wali Kelas ini?')" class="text-red-500 hover:text-red-600"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+                                    </td>
+                                </tr>
+                                <?php }
+                                } else { echo "<tr><td colspan='4' class='px-6 py-12 text-center text-slate-400'>Belum ada data wali kelas.</td></tr>"; } ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========================== PAGE: GURU BK ========================== -->
+        <?php elseif($page == 'bk'): ?>
+        
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Form BK -->
+            <div class="lg:col-span-1">
+                <div class="bg-white rounded-2xl shadow-lg border border-slate-200 p-6 sticky top-28">
+                    <h3 class="font-bold text-slate-800 mb-4 flex items-center gap-2">
+                        <?php if($is_edit): ?><span class="w-2 h-6 bg-amber-500 rounded-full"></span> Edit Guru BK<?php else: ?><span class="w-2 h-6 bg-rose-500 rounded-full"></span> Tambah Guru BK<?php endif; ?>
+                    </h3>
+                    <form method="POST" class="space-y-4">
+                        <input type="hidden" name="id_bk" value="<?php echo $id_bk; ?>">
+                        
+                        <div>
+                            <label class="text-xs font-bold text-slate-500">Nama Lengkap</label>
+                            <input type="text" name="nama_lengkap" value="<?php echo $nama_bk; ?>" required class="w-full p-3 rounded-xl bg-slate-50 border focus:border-rose-500 outline-none text-sm" placeholder="Nama Guru BK">
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-xs font-bold text-slate-500">Username</label>
+                                <input type="text" name="username" value="<?php echo $user_bk; ?>" required class="w-full p-3 rounded-xl bg-slate-50 border focus:border-rose-500 outline-none text-sm">
+                            </div>
+                            <div>
+                                <label class="text-xs font-bold text-slate-500">Password</label>
+                                <input type="text" name="password" class="w-full p-3 rounded-xl bg-slate-50 border focus:border-rose-500 outline-none text-sm" placeholder="<?php echo $is_edit ? '(Biarkan kosong)' : 'Password'; ?>" <?php echo $is_edit ? '' : 'required'; ?>>
+                            </div>
+                        </div>
+
+                        <?php if($is_edit): ?>
+                            <div class="flex gap-2">
+                                <button type="submit" name="update_bk" class="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-2 rounded-xl font-bold">Update</button>
+                                <a href="admin.php?page=bk" class="flex-1 bg-slate-200 text-slate-600 py-2 rounded-xl font-bold text-center">Batal</a>
+                            </div>
+                        <?php else: ?>
+                            <button type="submit" name="tambah_bk" class="w-full bg-rose-600 hover:bg-rose-700 text-white py-2 rounded-xl font-bold">Simpan Guru BK</button>
+                        <?php endif; ?>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Tabel BK -->
+            <div class="lg:col-span-2">
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-slate-50 text-slate-500 uppercase text-xs font-bold">
+                                <tr>
+                                    <th class="px-6 py-4">Nama Guru BK</th>
+                                    <th class="px-6 py-4">Username</th>
+                                    <th class="px-6 py-4 text-center">Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <?php 
+                                $data = mysqli_query($conn, "SELECT * FROM user_bk ORDER BY nama_lengkap ASC");
+                                if(mysqli_num_rows($data) > 0) {
+                                    while($d = mysqli_fetch_array($data)){
+                                ?>
+                                <tr class="hover:bg-slate-50 transition">
+                                    <td class="px-6 py-4 font-bold text-slate-700"><?php echo $d['nama_lengkap']; ?></td>
+                                    <td class="px-6 py-4 font-mono text-slate-500"><?php echo $d['username']; ?></td>
+                                    <td class="px-6 py-4 text-center flex justify-center gap-2">
+                                        <a href="admin.php?page=bk&edit=<?php echo $d['id']; ?>" class="text-amber-500 hover:text-amber-600"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></a>
+                                        <a href="admin.php?page=bk&hapus=<?php echo $d['id']; ?>" onclick="return confirm('Hapus Guru BK ini?')" class="text-red-500 hover:text-red-600"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+                                    </td>
+                                </tr>
+                                <?php }
+                                } else { echo "<tr><td colspan='3' class='px-6 py-12 text-center text-slate-400'>Belum ada data guru BK.</td></tr>"; } ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <?php endif; ?>
+
+    </main>
+
+    <!-- FOOTER HAK CIPTA -->
+    <footer class="bg-white border-t border-slate-200 mt-auto py-6">
+        <div class="max-w-7xl mx-auto px-4 text-center">
+            <p class="text-slate-500 text-xs sm:text-sm font-medium">
+                &copy; <?php echo date('Y'); ?> <span class="font-bold text-blue-600">SMK Ma'arif 4-5 Tambakboyo</span>. All rights reserved.
+            </p>
+        </div>
+    </footer>
 
     <script>
         <?php if($swal_type && $swal_msg): ?>
-            Swal.fire({ icon: '<?php echo $swal_type; ?>', title: '<?php echo $swal_type == "success" ? "Berhasil!" : "Info"; ?>', text: '<?php echo $swal_msg; ?>', confirmButtonColor: '#4f46e5', timer: 3000, timerProgressBar: true }).then(() => { window.history.replaceState(null, null, window.location.pathname); });
+            Swal.fire({ icon: '<?php echo $swal_type; ?>', title: 'Info', text: '<?php echo $swal_msg; ?>', confirmButtonColor: '#4f46e5' });
         <?php endif; ?>
-
-        function confirmDelete(id) {
-            Swal.fire({ title: 'Hapus Data Siswa?', text: "Data siswa dan riwayat absensi akan hilang!", icon: 'warning', showCancelButton: true, confirmButtonColor: '#e11d48', cancelButtonColor: '#64748b', confirmButtonText: 'Ya, Hapus!' }).then((result) => { if (result.isConfirmed) { window.location.href = 'admin.php?hapus=' + id; } })
-        }
-        
-        function confirmAlpha() {
-            Swal.fire({ title: 'Proses Alpha Otomatis?', text: "Menandai <?php echo $belum_hadir; ?> siswa belum hadir sebagai ALPHA.", icon: 'question', showCancelButton: true, confirmButtonColor: '#e11d48', cancelButtonColor: '#64748b', confirmButtonText: 'Proses' }).then((result) => { if (result.isConfirmed) { document.getElementById('formAlpha').submit(); } })
-        }
     </script>
 </body>
 </html>
